@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sentry_sdk
 from tinydb import TinyDB, Query
 from uuid import uuid4
 from html import escape
@@ -33,6 +34,16 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+sentry_sdk.init(
+    dsn="https://02ae47787c57ba6fe2a02cf8b213525b@o314947.ingest.us.sentry.io/4508109744177152",
+    # Set traces_sample_rate to 1.0 to capture 100%
+    # of transactions for tracing.
+    traces_sample_rate=1.0,
+    # Set profiles_sample_rate to 1.0 to profile 100%
+    # of sampled transactions.
+    # We recommend adjusting this value in production.
+    profiles_sample_rate=1.0,
+)
 
 db = TinyDB("db.json")
 db_lock = asyncio.Lock()
@@ -98,7 +109,8 @@ class Channel:
                     "registered_users", []
                 )
                 if user in r:
-                    text = "Вы уже зарегистрированы на канал"
+                    await start(update, context)
+                    return
                 else:
                     r.append(user)
                     channels.update({"registered_users": r}, Query().id == self.id)

@@ -1,2 +1,3 @@
 python-telegram-bot==21.6
 tinydb==4.8.0
+sentry_sdk==2.16.0
