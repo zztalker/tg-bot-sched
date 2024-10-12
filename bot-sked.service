@@ -1,0 +1,12 @@
+[Unit]
+Description=TG-BOT sked service
+After=network.target
+StartLimitIntervalSec=0
+[Service]
+Type=simple
+Restart=always
+RestartSec=1
+ExecStart=/root/bot-sked/start-bot.sh
+
+[Install]
+WantedBy=multi-user.target
