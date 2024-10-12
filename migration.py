@@ -16,8 +16,16 @@ def users_as_names():
         ]
         events.update(event, doc_ids=[event.doc_id])
 
+def int_event_id():
+    i = 1
+    for event in events.all():
+        event["id"] = i
+        events.update(event, doc_ids=[event.doc_id])
+        i += 1
+
 migrations_to_apply = [
-    {"name": "users_as_names", "callback": users_as_names}
+    {"name": "users_as_names", "callback": users_as_names},
+    {"name": "int_event_id", "callback": int_event_id},
 ]
 
 def apply():

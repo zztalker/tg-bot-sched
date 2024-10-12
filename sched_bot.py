@@ -53,6 +53,8 @@ channels = db.table("channels")
 channels_obj = {}
 wait_for_message = {}
 
+def get_next_id(table):
+    return table.all()[-1]["id"] + 1 if table.all() else 1
 
 class Channel:
     def __init__(self, id, name):
@@ -62,7 +64,7 @@ class Channel:
     def __str__(self) -> str:
         return f"Channel(id={self.id}, name={self.name})"
 
-    async def all_events(self, cmd=None, full=False):
+    async def all_events(self, cmd=None, full=False, username=None):
         event_list = events.search(Query().channel_id == self.id)
         logger.info("Events %r", event_list)
         keyboard = []
@@ -79,19 +81,31 @@ class Channel:
             date = datetime.strptime(event["date"], "%Y-%m-%d").strftime("%a %d.%b")
             time = event["time"]
             free_places = event["capacity"] - len(event["registered_users"])
-            if not full:
-                if event["capacity"] != 0 and free_places == 0:
-                    continue
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        text=f"🆓[{free_places}] {name} {date} {time}",
-                        callback_data=f"{cmd} {event['id']}",
-                    ),
-                ]
-            )
+            if event["capacity"] != 0 and free_places == 0:
+                mark = "🚫"
+            else:
+                mark = "🆓"
+            if cmd == "register" and username in event["registered_users"]:
+                keyboard.append(
+                    [
+                        InlineKeyboardButton(
+                            f"✅[{free_places}] {name} {date} {time}",
+                            callback_data=f"unregister {event['id']}",
+                        ),
+                    ]
+                )
+            else:
+                keyboard.append(
+                    [
+                        InlineKeyboardButton(
+                            text=f"{mark}[{free_places}] {name} {date} {time}",
+                            callback_data=f"{cmd} {event['id']}",
+                        ),
+                    ]
+                )
         reply_markup = InlineKeyboardMarkup(keyboard)
         text = f"Список предстоящих мероприятий {self.name}:"
+        logger.info("List of events %r", reply_markup)
         return text, reply_markup
 
     async def register_as_user(
@@ -216,57 +230,54 @@ async def start(update: Update, context: CallbackContext):
 
 
 async def event_show_change(event):
-    keyboard = []
-    keyboard.append(
+    keyboard = [
         [
             InlineKeyboardButton(
                 "Изменить название", callback_data=f"change-event {event['id']} name"
             )
-        ]
-    )
-    keyboard.append(
+        ],
         [
             InlineKeyboardButton(
                 "Изменить дату", callback_data=f"change-event {event['id']} date"
             )
-        ]
-    )
-    keyboard.append(
+        ],
         [
             InlineKeyboardButton(
                 "Изменить время", callback_data=f"change-event {event['id']} time"
             )
-        ]
-    )
-    keyboard.append(
+        ],
         [
             InlineKeyboardButton(
                 "Изменить количество мест",
                 callback_data=f"change-event {event['id']} capacity",
             )
-        ]
-    )
-    keyboard.append(
+        ],
+        [
+            InlineKeyboardButton(
+                "Добавить участника", callback_data=f"change-event {event['id']} add"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "Удалить участника", callback_data=f"change-event {event['id']} remove"
+            )
+        ],
         [
             InlineKeyboardButton(
                 "Скрыть событие", callback_data=f"change-event {event['id']} hidden"
             )
-        ]
-    )
-    keyboard.append(
+        ],
         [
             InlineKeyboardButton(
                 "Удалить событие", callback_data=f"change-event {event['id']} delete"
             )
-        ]
-    )
-    keyboard.append(
+        ],
         [
             InlineKeyboardButton(
                 "🔙 К списку", callback_data=f"list-event {event["channel_id"]}"
             )
         ]
-    )
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = f"""Изменение события {event['name']}\n
     дата:\t<b>{event["date"]} </b>
@@ -310,6 +321,27 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.inline_query.answer([], button=results)
 
 
+def get_list_of_users(event):
+    keyboard = []
+    for user in event["registered_users"]:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    f"Убрать {user}",
+                    callback_data=f"change-event {event['id']} remove-user {user}",
+                )
+            ]
+        )
+    keyboard.append(
+        [InlineKeyboardButton("🔙 К событию", callback_data=f"change-event {event['id']}")],
+    )
+    keyboard.append(
+        [InlineKeyboardButton("🔙 К списку", callback_data=f"list-event {event['channel_id']}")]
+    )
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    logger.info("List of users %r", reply_markup)
+    return reply_markup
+
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Parses the CallbackQuery and updates the message text."""
     query = update.callback_query
@@ -331,7 +363,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         }
     elif data[0] == "events":
         ch = channels_obj[int(data[1])]
-        text, reply = await ch.all_events(cmd="register")
+        text, reply = await ch.all_events(cmd="register", username=user_name)
     elif data[0] == "admin":
         ch = channels_obj[int(data[1])]
         text, reply = await ch.admin(update, context)
@@ -339,7 +371,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ch = channels_obj[int(data[1])]
         text, reply = await ch.all_events(cmd="change-event", full=True)
     elif data[0] == "change-event":
-        event = events.get(Query().id == data[1])
+        event = events.get(Query().id == int(data[1]))
         if len(data) > 2:
             reply = event_return_back(data[1], event["channel_id"])
             if data[2] == "name":
@@ -368,30 +400,61 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 }
             elif data[2] == "hidden":
                 async with db_lock:
-                    event = events.get(Query().id == data[1])
+                    event = events.get(Query().id == int(data[1]))
                     event["hidden"] = not event.get("hidden", False)
-                    events.update(event, Query().id == data[1])
+                    events.update(event, Query().id == int(data[1]))
                 text = "Событие скрыто" if event["hidden"] else "Событие открыто"
             elif data[2] == "delete":
                 async with db_lock:
                     events.remove(Query().id == data[1])
                 text = "Событие удалено"
                 reply.remove(0)
+            elif data[2] == "add":
+                text = "Введите username участника"
+                wait_for_message[query.message.chat_id] = {
+                    "type": "event-add",
+                    "event_id": data[1],
+                }
+            elif data[2] == "remove":
+                text = "Кого убрать?"
+                reply = get_list_of_users(event)
+            elif data[2] == "remove-user":
+                async with db_lock:
+                    event = events.get(Query().id == int(data[1]))
+                    event["registered_users"].remove(data[3])
+                    events.update(event, Query().id == int(data[1]))
+                text = f"Пользователь @{data[3]} удален"
+                reply = get_list_of_users(event)
         else:
             text, reply = await event_show_change(event)
     elif data[0] == "register":
         async with db_lock:
-            event = events.get(Query().id == data[1])
+            event = events.get(Query().id == int(data[1]))
             if event["capacity"] == 0 or (
                 len(event["registered_users"]) < event["capacity"]
             ):
-                event["registered_users"].append(query.from_user.username)
-                events.update(event, Query().id == data[1])
-                text = "Вы успешно записались на событие"
+                user = query.from_user.username
+                if user not in event["registered_users"]:
+                    event["registered_users"].append(user)
+                    events.update(event, Query().id == int(data[1]))
+                    text = "Вы успешно записались на событие"
+                else:
+                    text = "Вы уже записаны на событие"
             else:
                 text = "Все места на событие заняты"
+    elif data[0] == "unregister":
+        async with db_lock:
+            event = events.get(Query().id == int(data[1]))
+            user = query.from_user.username
+            if user in event["registered_users"]:
+                event["registered_users"].remove(user)
+                events.update(event, Query().id == int(data[1]))
+                text = "Вы успешно отменили регистрацию на событие /start"
+            else:
+                text = "Вы небыли записаны на событие /start"
     else:
-        text = f"Какая-то ошибка в обработке кнопки {data}"
+        logger.error("Unknown button %r", data)
+        text = f"Какая-то ошибка в обработке кнопки - начните с начала /start"
 
     # CallbackQueries need to be answered, even if no notification to the user is needed
     # Some clients may have trouble otherwise. See https://core.telegram.org/bots/api#callbackquery
@@ -411,16 +474,17 @@ async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if data["type"] == "add-event":
             msg_data = update.message.text.split("@")
             try:
-                event = {
-                    "id": str(uuid4()),
-                    "name": msg_data[0],
-                    "date": msg_data[1],
-                    "time": msg_data[2],
-                    "capacity": int(msg_data[3]),
-                    "registered_users": [],
-                    "channel_id": int(data["channel_id"]),
-                }
                 async with db_lock:
+                    event = {
+                        "id": get_next_id(events),
+                        "name": msg_data[0],
+                        "date": msg_data[1],
+                        "time": msg_data[2],
+                        "capacity": int(msg_data[3]),
+                        "registered_users": [],
+                        "channel_id": int(data["channel_id"]),
+                    }
+
                     events.insert(event)
                     text = "Событие успешно добавлено! Вы можете отправить следующее событие или нажать /start для возврата в главное меню"
             except Exception as e:
@@ -433,7 +497,7 @@ async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif data["type"].startswith("event-"):
             async with db_lock:
-                event = events.get(Query().id == data["event_id"])
+                event = events.get(Query().id == int(data["event_id"]))
                 if data["type"] == "event-name":
                     event["name"] = update.message.text
                 elif data["type"] == "event-date":
@@ -442,8 +506,11 @@ async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     event["time"] = update.message.text
                 elif data["type"] == "event-capacity":
                     event["capacity"] = int(update.message.text)
-
-                events.update(event, Query().id == data["event_id"])
+                elif data["type"] == "event-add":
+                    user = update.message.text.replace("@", "")
+                    if user not in event["registered_users"]:
+                        event["registered_users"].append(user)
+                events.update(event, Query().id == int(data["event_id"]))
             text, reply = await event_show_change(event)
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
@@ -452,6 +519,8 @@ async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.HTML,
             )
             return
+        else:
+            logger.error("Unknown wait for message %r", data)
 
     text = f"Для начала работы отправьте /start"
     await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
