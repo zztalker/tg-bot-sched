@@ -7,6 +7,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
+    InlineQueryResultsButton,
     Bot,
     InlineQueryResultArticle,
     InputTextMessageContent,
@@ -25,7 +26,7 @@ from telegram.ext import (
 )
 from datetime import datetime, timedelta
 import logging
-import threading
+import migration
 
 # Initialize logging
 logging.basicConfig(
@@ -47,12 +48,14 @@ class Channel:
         self.id = id
         self.name = name
 
+    def __str__(self) -> str:
+        return f"Channel(id={self.id}, name={self.name})"
+
     async def all_events(self, cmd=None, full=False):
         event_list = events.search(Query().channel_id == self.id)
         logger.info("Events %r", event_list)
         keyboard = []
-        for event in event_list:
-
+        for event in sorted(event_list, key=lambda x: x["date"]):
             if not full:
                 if (
                     datetime.strptime(event["date"], "%Y-%m-%d").date()
@@ -84,6 +87,7 @@ class Channel:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
         user = update.effective_user.username
+        logger.info("register as user by %r in channel %r", user, self)
         if not user:
             text = (
                 "Для регистрации необходимо установить username в настройках телеграм"
@@ -96,7 +100,8 @@ class Channel:
                 if user in r:
                     text = "Вы уже зарегистрированы на канал"
                 else:
-                    channels.update({"registered_users": [user]}, Query().id == self.id)
+                    r.append(user)
+                    channels.update({"registered_users": r}, Query().id == self.id)
                     text = f"Вы успешно зарегистрировались на канал {self.name} - для продолженния напишите /start"
         await update.message.reply_text(text=text, parse_mode=ParseMode.HTML)
 
@@ -104,6 +109,7 @@ class Channel:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
         user = update.effective_user.username
+        logger.info("register as admin by %r in channel %r", user, self)
         if not user:
             text = (
                 "Для регистрации необходимо установить username в настройках телеграм"
@@ -114,7 +120,8 @@ class Channel:
                 if user in r:
                     text = "Вы уже зарегистрированы как админ на канал"
                 else:
-                    channels.update({"admins": [user]}, Query().id == self.id)
+                    r.append(user)
+                    channels.update({"admins": r}, Query().id == self.id)
                     text = f"Вы успешно зарегистрировались как админ на канал {self.name} - для продолженния напишите /start"
         await update.message.reply_text(text=text, parse_mode=ParseMode.HTML)
 
@@ -140,18 +147,6 @@ class Channel:
         reply_markup = InlineKeyboardMarkup(keyboard)
         return f"Упправление событиями в {self.name}:", reply_markup
 
-    def apply_to_event(self):
-        raise NotImplementedError
-
-    def remove_from_event(self):
-        raise NotImplementedError
-
-    def add_event(self):
-        raise NotImplementedError
-
-    def __str__(self):
-        return f"Channel(id={self.id})"
-
     def __repr__(self):
         return self.__str__()
 
@@ -161,6 +156,7 @@ async def start(update: Update, context: CallbackContext):
         del wait_for_message[update.message.chat_id]
 
     user = update.effective_user.username
+    logger.info("Start command by %r", user)
     if not user:
         await update.message.reply_text(
             "Для регистрации необходимо установить username в настройках телеграм"
@@ -206,6 +202,7 @@ async def start(update: Update, context: CallbackContext):
         reply_markup=reply_markup,
     )
 
+
 async def event_show_change(event):
     keyboard = []
     keyboard.append(
@@ -232,7 +229,8 @@ async def event_show_change(event):
     keyboard.append(
         [
             InlineKeyboardButton(
-                "Изменить количество мест", callback_data=f"change-event {event['id']} capacity"
+                "Изменить количество мест",
+                callback_data=f"change-event {event['id']} capacity",
             )
         ]
     )
@@ -268,21 +266,14 @@ async def event_show_change(event):
 """
     return text, reply_markup
 
+
 def event_return_back(event_id, channel_id):
     keyboard = []
     keyboard.append(
-        [
-            InlineKeyboardButton(
-                "🔙 К события", callback_data=f"change-event {event_id}"
-            )
-        ]
+        [InlineKeyboardButton("🔙 К события", callback_data=f"change-event {event_id}")]
     )
     keyboard.append(
-        [
-            InlineKeyboardButton(
-                "🔙 К списку", callback_data=f"list-event {channel_id}"
-            )
-        ]
+        [InlineKeyboardButton("🔙 К списку", callback_data=f"list-event {channel_id}")]
     )
     reply_markup = InlineKeyboardMarkup(keyboard)
     return reply_markup
@@ -290,43 +281,30 @@ def event_return_back(event_id, channel_id):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays info on how to use the bot."""
+    logger.info("Help command by %r %r", update.effective_user, update.message)
     await update.message.reply_text("Use /start to test this bot.")
+
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the inline query. This is run when you type: @botusername <query>"""
     query = update.inline_query.query
+    user_name = update.inline_query.from_user.username
+    logger.info("Inline query by %r data %r ", user_name, query)
+    results = InlineQueryResultsButton(
+        text="Записаться на событие",
+        start_parameter="CMD_event_id_register",
+    )
 
-    results = [
-        InlineQueryResultArticle(
-            id=str(uuid4()),
-            title="Caps",
-            input_message_content=InputTextMessageContent(query.upper()),
-        ),
-        InlineQueryResultArticle(
-            id=str(uuid4()),
-            title="Bold",
-            input_message_content=InputTextMessageContent(
-                f"<b>{escape(query)}</b>", parse_mode=ParseMode.HTML
-            ),
-        ),
-        InlineQueryResultArticle(
-            id=str(uuid4()),
-            title="Italic",
-            input_message_content=InputTextMessageContent(
-                f"<i>{escape(query)}</i>", parse_mode=ParseMode.HTML
-            ),
-        ),
-    ]
-
-    await update.inline_query.answer(results)
+    await update.inline_query.answer([], button=results)
 
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Parses the CallbackQuery and updates the message text."""
     query = update.callback_query
-    bot = context.bot
     reply = None
     data = query.data.split(" ")
+    user_name = query.from_user.username
+    logger.info("Button pressed by %r data %r", user_name, data)
     if data[0] == "add-event":
         text = (
             "Для добавления события отправьте сообщение в формате:\n"
@@ -412,8 +390,12 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(
+        "Message from %r: %r", update.effective_user.username, update.message.text
+    )
     if update.message.chat_id in wait_for_message:
         data = wait_for_message[update.message.chat_id]
+        logger.info("Wait for message %r", data)
         if data["type"] == "add-event":
             msg_data = update.message.text.split("@")
             try:
@@ -428,7 +410,7 @@ async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 }
                 async with db_lock:
                     events.insert(event)
-                    text="Событие успешно добавлено! Вы можете отправить следующее событие или нажать /start для возврата в главное меню"
+                    text = "Событие успешно добавлено! Вы можете отправить следующее событие или нажать /start для возврата в главное меню"
             except Exception as e:
                 logger.error(e)
                 text = f"Ошибка при добавлении события {e!r}"
@@ -436,6 +418,7 @@ async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=update.effective_chat.id,
                 text=text,
             )
+            return
         if data["type"] == "event-name":
             async with db_lock:
                 event = events.get(Query().id == data["event_id"])
@@ -448,10 +431,9 @@ async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply,
                 parse_mode=ParseMode.HTML,
             )
+            return
     text = f"Для начала работы отправьте /start"
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id, text=text
-    )
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
 
 
 # Main function to set up the bot
@@ -465,6 +447,7 @@ def main():
 
     for channel in channels.all():
         ch = Channel(channel["id"], channel["name"])
+        logger.info("%r register hooks", ch)
         channels_obj[channel["id"]] = ch
         application.add_handler(
             CommandHandler(
@@ -488,4 +471,5 @@ def main():
 
 
 if __name__ == "__main__":
+    migration.apply()
     main()
