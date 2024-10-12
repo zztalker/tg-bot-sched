@@ -419,10 +419,18 @@ async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=text,
             )
             return
-        if data["type"] == "event-name":
+        elif data["type"].startswith("event-"):
             async with db_lock:
                 event = events.get(Query().id == data["event_id"])
-                event["name"] = update.message.text
+                if data["type"] == "event-name":
+                    event["name"] = update.message.text
+                elif data["type"] == "event-date":
+                    event["date"] = update.message.text
+                elif data["type"] == "event-time":
+                    event["time"] = update.message.text
+                elif data["type"] == "event-capacity":
+                    event["capacity"] = int(update.message.text)
+
                 events.update(event, Query().id == data["event_id"])
             text, reply = await event_show_change(event)
             await context.bot.send_message(
@@ -432,6 +440,7 @@ async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.HTML,
             )
             return
+
     text = f"Для начала работы отправьте /start"
     await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
 
