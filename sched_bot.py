@@ -9,10 +9,6 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
     InlineQueryResultsButton,
-    Bot,
-    InlineQueryResultArticle,
-    InputTextMessageContent,
-    helpers,
 )
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -292,9 +288,10 @@ async def event_show_change(event):
 
 def event_return_back(event_id, channel_id):
     keyboard = []
-    keyboard.append(
-        [InlineKeyboardButton("🔙 К события", callback_data=f"change-event {event_id}")]
-    )
+    if event_id:
+        keyboard.append(
+            [InlineKeyboardButton("🔙 К события", callback_data=f"change-event {event_id}")]
+        )
     keyboard.append(
         [InlineKeyboardButton("🔙 К списку", callback_data=f"list-event {channel_id}")]
     )
@@ -405,10 +402,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     events.update(event, Query().id == int(data[1]))
                 text = "Событие скрыто" if event["hidden"] else "Событие открыто"
             elif data[2] == "delete":
+                channel_id = event["channel_id"]
                 async with db_lock:
-                    events.remove(Query().id == data[1])
+                    events.remove(Query().id == int(data[1]))
                 text = "Событие удалено"
-                reply.remove(0)
+                reply = event_return_back(None, channel_id)
             elif data[2] == "add":
                 text = "Введите username участника"
                 wait_for_message[query.message.chat_id] = {
