@@ -1,12 +1,15 @@
 import asyncio
 import os
+import pickle
 import sentry_sdk
+from pathlib import Path
 from tinydb import TinyDB, Query
 from uuid import uuid4
 from html import escape
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
     Update,
     InlineQueryResultsButton,
 )
@@ -24,6 +27,8 @@ from telegram.ext import (
 from datetime import datetime, timedelta
 import logging
 import migration
+
+SUPER_ADMINS = ["zztalker"]
 
 # Initialize logging
 logging.basicConfig(
@@ -45,6 +50,7 @@ db = TinyDB("db.json")
 db_lock = asyncio.Lock()
 events = db.table("events")
 channels = db.table("channels")
+settings = db.table("settings")
 
 channels_obj = {}
 wait_for_message = {}
@@ -161,6 +167,16 @@ class Channel:
             ],
             [
                 InlineKeyboardButton(
+                    "Добавить или изменить welcome message", callback_data=f"add-message {self.id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "Удалить welcome message", callback_data=f"del-message {self.id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     "Удалить прошедшие события", callback_data=f"delete-old {self.id}"
                 )
             ],
@@ -168,6 +184,9 @@ class Channel:
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         return f"Упправление событиями в {self.name}:", reply_markup
+
+    def welcome_message(self):
+        return channels.get(Query().id == self.id).get("welcome_message")
 
     def __repr__(self):
         return self.__str__()
@@ -206,6 +225,16 @@ async def start(update: Update, context: CallbackContext):
                     )
                 ]
             )
+    if user in SUPER_ADMINS:
+        was_admin = True
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    f"настройки бота",
+                    callback_data="settings",
+                )
+            ]
+        )
 
     if not keyboard:
         await update.message.reply_text("Вы не зарегистрированы ни на одном канале")
@@ -217,12 +246,18 @@ async def start(update: Update, context: CallbackContext):
     else:
         admin_text = ""
 
-    await update.message.reply_text(
-        "Вы можете выбрать канал для {admin} записи на события:".format(
-            admin=admin_text
-        ),
-        reply_markup=reply_markup,
-    )
+    text = "Выберите канал для {admin} просмотра событий:".format(admin=admin_text)
+
+    if photo := settings.get(Query().name == "base_image"):
+        if photo_id := photo.get("value"):
+            photo_data = pickle.load(open(f"data/{photo_id}.pkl", "rb"))
+            await update.message.reply_photo(
+                photo=photo_data,
+                caption=text,
+                reply_markup=reply_markup,
+            )
+    else:
+        await update.message.reply_text(text=text, reply_markup=reply_markup)
 
 
 async def event_show_change(event):
@@ -345,6 +380,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply = None
     data = query.data.split(" ")
     user_name = query.from_user.username
+    msg_data = None
     logger.info("Button pressed by %r data %r", user_name, data)
     if data[0] == "add-event":
         text = (
@@ -360,6 +396,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         }
     elif data[0] == "events":
         ch = channels_obj[int(data[1])]
+        if msg_id := ch.welcome_message():
+            try:
+                msg_data = pickle.load(open(f"data/{msg_id}.pkl", "rb"))
+            except Exception as e:
+                logger.error(e, exc_info=True)
+            else:
+                logger.info("Send welcome message %r", msg_data)
         text, reply = await ch.all_events(cmd="register", username=user_name)
     elif data[0] == "admin":
         ch = channels_obj[int(data[1])]
@@ -450,6 +493,23 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 text = "Вы успешно отменили регистрацию на событие /start"
             else:
                 text = "Вы небыли записаны на событие /start"
+    elif data[0] == "add-message":
+        text = "Отправьте фото и текст для welcome message"
+        wait_for_message[query.message.chat_id] = {
+            "type": "add-message",
+            "channel_id": data[1],
+        }
+    elif data[0] == "del-message":
+        async with db_lock:
+            channel = channels.get(Query().id == int(data["channel_id"]))
+            Path(f"data/{channel["welcome_message"]}.pkl").unlink(missing_ok=True)
+            channel["welcome_message"] = None
+            channels.update(channel, Query().id == int(data["channel_id"]))
+    elif data[0] == "settings":
+        text = "Отправьте сообщение с картинкой для установки базового изображения"
+        wait_for_message[query.message.chat_id] = {
+            "type": "set-base-image",
+        }
     else:
         logger.error("Unknown button %r", data)
         text = f"Какая-то ошибка в обработке кнопки - начните с начала /start"
@@ -457,9 +517,52 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # CallbackQueries need to be answered, even if no notification to the user is needed
     # Some clients may have trouble otherwise. See https://core.telegram.org/bots/api#callbackquery
     await query.answer()
+    if msg_data:
+        await query.edit_message_media(
+            media=InputMediaPhoto(media=msg_data["photo"].file_id, caption=msg_data["msg"]),
+            reply_markup=reply,
+        )
+        return
+    elif query.message.photo:
+        await query.edit_message_media(
+            media=InputMediaPhoto(media=query.message.photo[-1].file_id, caption=text),
+            reply_markup=reply,
+        )
+        return
     await query.edit_message_text(
         text=text, reply_markup=reply, parse_mode=ParseMode.HTML
+        )
+
+
+async def photo_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(
+        "Message from %r: %r", update.effective_user.username, update.message.text
     )
+    photo = update.message.photo[-1]
+    msg = update.message.caption
+    if update.message.chat_id in wait_for_message:
+        data = wait_for_message[update.message.chat_id]
+        logger.info("Wait for message %r", data)
+        uuid = f"{uuid4()}"
+        if data["type"] == "add-message":
+            pickle.dump({"photo": photo, "msg": msg}, open(f"data/{uuid}.pkl", "wb"))
+            async with db_lock:
+                channel = channels.get(Query().id == int(data["channel_id"]))
+                channel["welcome_message"] = uuid
+                channels.update(channel, Query().id == int(data["channel_id"]))
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Сообщение сохранено")
+            return
+        elif data["type"] == "set-base-image":
+            pickle.dump(photo, open(f"data/{uuid}.pkl", "wb"))
+            async with db_lock:
+                settings.upsert({"name": "base_image", "value": uuid}, Query().name == "base_image")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Изображение сохранено")
+            return
+        else:
+            logger.error("Unknown wait for photo-message %r", data)
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Неизвестная команда")
+            return
+    await context.bot.send_photo(chat_id=update.effective_chat.id, photo=photo, caption=msg)
 
 
 async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -530,9 +633,6 @@ def main():
         Application.builder().token(os.environ.get("TELEGRAM_BOT_TOKEN")).build()
     )
 
-    # Command handlers
-    echo_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), msg_process)
-
     for channel in channels.all():
         ch = Channel(channel["id"], channel["name"])
         logger.info("%r register hooks", ch)
@@ -553,7 +653,13 @@ def main():
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(InlineQueryHandler(inline_query))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(echo_handler)
+
+    # Command handlers
+    msg_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), msg_process)
+    photo_handler = MessageHandler(filters.PHOTO, photo_process)
+
+    application.add_handler(msg_handler)
+    application.add_handler(photo_handler)
     # Start the bot
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
