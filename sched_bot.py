@@ -50,13 +50,16 @@ db = TinyDB("db.json")
 db_lock = asyncio.Lock()
 events = db.table("events")
 channels = db.table("channels")
+notification = db.table("notification")
 settings = db.table("settings")
 
 channels_obj = {}
 wait_for_message = {}
 
+
 def get_next_id(table):
     return table.all()[-1]["id"] + 1 if table.all() else 1
+
 
 class Channel:
     def __init__(self, id, name):
@@ -167,7 +170,8 @@ class Channel:
             ],
             [
                 InlineKeyboardButton(
-                    "Добавить или изменить welcome message", callback_data=f"add-message {self.id}"
+                    "Добавить или изменить welcome message",
+                    callback_data=f"add-message {self.id}",
                 )
             ],
             [
@@ -313,7 +317,7 @@ async def event_show_change(event):
             InlineKeyboardButton(
                 "🔙 К списку", callback_data=f"list-event {event["channel_id"]}"
             )
-        ]
+        ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = f"""Изменение события {event['name']}\n
@@ -327,11 +331,36 @@ async def event_show_change(event):
     return text, reply_markup
 
 
+def send_notification(context):
+    now = datetime.now().isoformat()
+    for n in notification.search(Query().date == now):
+        event = events.get(Query().id == n["event_id"])
+        text = f"Напоминание о событии {event['name']} {event['date']} {event['time']}"
+        context.bot.send_message(chat_id=n["chat_id"], text=text)
+        if event["welcome_message"]:
+            try:
+                msg_data = pickle.load(
+                    open(f"data/{event['welcome_message']}.pkl", "rb")
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+            else:
+                context.bot.send_photo(
+                    chat_id=n["chat_id"],
+                    photo=msg_data["photo"],
+                    caption=msg_data["msg"],
+                )
+
+
 def event_return_back(event_id, channel_id):
     keyboard = []
     if event_id:
         keyboard.append(
-            [InlineKeyboardButton("🔙 К события", callback_data=f"change-event {event_id}")]
+            [
+                InlineKeyboardButton(
+                    "🔙 К события", callback_data=f"change-event {event_id}"
+                )
+            ]
         )
     keyboard.append(
         [InlineKeyboardButton("🔙 К списку", callback_data=f"list-event {channel_id}")]
@@ -371,14 +400,23 @@ def get_list_of_users(event):
             ]
         )
     keyboard.append(
-        [InlineKeyboardButton("🔙 К событию", callback_data=f"change-event {event['id']}")],
+        [
+            InlineKeyboardButton(
+                "🔙 К событию", callback_data=f"change-event {event['id']}"
+            )
+        ],
     )
     keyboard.append(
-        [InlineKeyboardButton("🔙 К списку", callback_data=f"list-event {event['channel_id']}")]
+        [
+            InlineKeyboardButton(
+                "🔙 К списку", callback_data=f"list-event {event['channel_id']}"
+            )
+        ]
     )
     reply_markup = InlineKeyboardMarkup(keyboard)
     logger.info("List of users %r", reply_markup)
     return reply_markup
+
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Parses the CallbackQuery and updates the message text."""
@@ -491,6 +529,23 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     event["registered_users"].append(user)
                     events.update(event, Query().id == int(data[1]))
                     text = "Вы успешно записались на событие"
+                    notify_date = datetime.fromisoformat(event["date"]) - timedelta(
+                        days=1
+                    )
+                    notification.insert_multiple(
+                        [
+                            {
+                                "event_id": event["id"],
+                                "chat_id": query.message.chat_id,
+                                "date": event["date"],
+                            },
+                            {
+                                "event_id": event["id"],
+                                "chat_id": query.message.chat_id,
+                                "date": notify_date.isoformat(),
+                            },
+                        ]
+                    )
                 else:
                     text = "Вы уже записаны на событие"
             else:
@@ -503,6 +558,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 event["registered_users"].remove(user)
                 events.update(event, Query().id == int(data[1]))
                 text = "Вы успешно отменили регистрацию на событие /start"
+                notification.remove(
+                    (
+                        Query().event_id
+                        == event["id"] & Query().chat_id
+                        == query.message.chat_id
+                    )
+                )
             else:
                 text = "Вы небыли записаны на событие /start"
     elif data[0] == "add-message":
@@ -522,6 +584,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         wait_for_message[query.message.chat_id] = {
             "type": "set-base-image",
         }
+    elif data[0] == "add-channel":
+        text = "Отправьте сообщение с названием канала"
+        wait_for_message[query.message.chat_id] = {
+            "type": "add-channel",
+        }
     else:
         logger.error("Unknown button %r", data)
         text = f"Какая-то ошибка в обработке кнопки - начните с начала /start"
@@ -531,7 +598,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await query.answer()
     if msg_data:
         await query.edit_message_media(
-            media=InputMediaPhoto(media=msg_data["photo"].file_id, caption=msg_data["msg"]),
+            media=InputMediaPhoto(
+                media=msg_data["photo"].file_id, caption=msg_data["msg"]
+            ),
             reply_markup=reply,
         )
         return
@@ -543,7 +612,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await query.edit_message_text(
         text=text, reply_markup=reply, parse_mode=ParseMode.HTML
-        )
+    )
 
 
 async def photo_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -562,13 +631,19 @@ async def photo_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 channel = channels.get(Query().id == int(data["channel_id"]))
                 channel["welcome_message"] = uuid
                 channels.update(channel, Query().id == int(data["channel_id"]))
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Сообщение сохранено")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text="Сообщение сохранено"
+            )
             return
         elif data["type"] == "set-base-image":
             pickle.dump(photo, open(f"data/{uuid}.pkl", "wb"))
             async with db_lock:
-                settings.upsert({"name": "base_image", "value": uuid}, Query().name == "base_image")
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Изображение сохранено")
+                settings.upsert(
+                    {"name": "base_image", "value": uuid}, Query().name == "base_image"
+                )
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text="Изображение сохранено"
+            )
             return
         elif data["type"] == "event-message":
             event_id = data["event_id"]
@@ -577,13 +652,19 @@ async def photo_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 event = events.get(Query().id == int(event_id))
                 event["welcome_message"] = uuid
                 events.update(event, Query().id == int(event_id))
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Сообщение сохранено")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text="Сообщение сохранено"
+            )
             return
         else:
             logger.error("Unknown wait for photo-message %r", data)
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Неизвестная команда")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text="Неизвестная команда"
+            )
             return
-    await context.bot.send_photo(chat_id=update.effective_chat.id, photo=photo, caption=msg)
+    await context.bot.send_photo(
+        chat_id=update.effective_chat.id, photo=photo, caption=msg
+    )
 
 
 async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -634,7 +715,10 @@ async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         event["registered_users"].append(user)
                 elif data["type"] == "event-message":
                     uuid = f"{uuid4()}"
-                    pickle.dump({"photo": None, "msg": update.message.text}, open(f"data/{uuid}.pkl", "wb"))
+                    pickle.dump(
+                        {"photo": None, "msg": update.message.text},
+                        open(f"data/{uuid}.pkl", "wb"),
+                    )
                     event["welcome_message"] = uuid
                 events.update(event, Query().id == int(data["event_id"]))
             text, reply = await event_show_change(event)
@@ -643,6 +727,24 @@ async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=text,
                 reply_markup=reply,
                 parse_mode=ParseMode.HTML,
+            )
+            return
+        elif data["type"] == "add-channel":
+            async with db_lock:
+                token = f"{uuid4()}"
+                admin_token = f"{uuid4()}"
+                channel = {
+                    "id": get_next_id(channels),
+                    "name": update.message.text,
+                    "registered_users": [],
+                    "admins": [update.effective_user.username],
+                    "token": token,
+                    "admin_token": admin_token,
+                }
+                channels.insert(channel)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Канал успешно добавлен. \n Токен для регистрации: {token} \n Токен для администрирования: {admin_token}".format(token=token, admin_token=admin_token),
             )
             return
         else:
@@ -685,7 +787,9 @@ def main():
 
     application.add_handler(msg_handler)
     application.add_handler(photo_handler)
+
     # Start the bot
+    application.job_queue.run_repeating(send_notification, interval=60, first=0)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
