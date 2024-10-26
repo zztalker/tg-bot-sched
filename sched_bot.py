@@ -285,6 +285,12 @@ async def event_show_change(event):
         ],
         [
             InlineKeyboardButton(
+                "Изменить/добавить notifycation message",
+                callback_data=f"change-event {event['id']} message",
+            )
+        ],
+        [
+            InlineKeyboardButton(
                 "Добавить участника", callback_data=f"change-event {event['id']} add"
             )
         ],
@@ -438,6 +444,12 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     "type": "event-capacity",
                     "event_id": data[1],
                 }
+            elif data[2] == "message":
+                text = "Для добавления event-message отправьте сообщение"
+                wait_for_message[query.message.chat_id] = {
+                    "type": "event-message",
+                    "event_id": data[1],
+                }
             elif data[2] == "hidden":
                 async with db_lock:
                     event = events.get(Query().id == int(data[1]))
@@ -558,6 +570,15 @@ async def photo_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 settings.upsert({"name": "base_image", "value": uuid}, Query().name == "base_image")
             await context.bot.send_message(chat_id=update.effective_chat.id, text="Изображение сохранено")
             return
+        elif data["type"] == "event-message":
+            event_id = data["event_id"]
+            pickle.dump({"photo": photo, "msg": msg}, open(f"data/{uuid}.pkl", "wb"))
+            async with db_lock:
+                event = events.get(Query().id == int(event_id))
+                event["welcome_message"] = uuid
+                events.update(event, Query().id == int(event_id))
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Сообщение сохранено")
+            return
         else:
             logger.error("Unknown wait for photo-message %r", data)
             await context.bot.send_message(chat_id=update.effective_chat.id, text="Неизвестная команда")
@@ -611,6 +632,10 @@ async def msg_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     user = update.message.text.replace("@", "")
                     if user not in event["registered_users"]:
                         event["registered_users"].append(user)
+                elif data["type"] == "event-message":
+                    uuid = f"{uuid4()}"
+                    pickle.dump({"photo": None, "msg": update.message.text}, open(f"data/{uuid}.pkl", "wb"))
+                    event["welcome_message"] = uuid
                 events.update(event, Query().id == int(data["event_id"]))
             text, reply = await event_show_change(event)
             await context.bot.send_message(
