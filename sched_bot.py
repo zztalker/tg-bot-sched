@@ -355,12 +355,14 @@ async def send_notification(context):
             except Exception as e:
                 logger.error(e, exc_info=True)
             else:
-                await context.bot.send_photo(
-                    chat_id=n["chat_id"],
-                    photo=msg_data["photo"],
-                    caption=msg_data["msg"],
-                    parse_mode="markdown",
-                )
+                try:
+                    await context.bot.send_photo(
+                        chat_id=n["chat_id"],
+                        photo=msg_data["photo"],
+                        caption=msg_data["msg"],
+                    )
+                except Exception as e:
+                    logger.error(e, exc_info=True)
         async with db_lock:
             notification.remove(doc_ids=[n.doc_id])
 
