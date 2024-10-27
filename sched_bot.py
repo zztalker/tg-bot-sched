@@ -265,6 +265,7 @@ async def start(update: Update, context: CallbackContext):
             await update.message.reply_photo(
                 photo=photo_data,
                 caption=text,
+                parse_mode="markdown",
                 reply_markup=reply_markup,
             )
     else:
@@ -328,12 +329,12 @@ async def event_show_change(event):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = f"""Изменение события {event['name']}\n
-    дата:\t<b>{event["date"]} </b>
-    время:\t<b>{event["time"]} </b>
-    мест:\t<b>{event["capacity"]}</b>
-    занято:\t<b>{len(event["registered_users"])}</b>
+    дата:\t*{event["date"]}*
+    время:\t*{event["time"]}*
+    мест:\t*{event["capacity"]}*
+    занято:\t*{len(event["registered_users"])}*
     кто записан:\t{', '.join([f'@{name}' for name in event["registered_users"]])}
-    событие <b>{'скрыто' if event.get("hidden", False) else 'открыто'}</b>
+    событие *{'скрыто' if event.get("hidden", False) else 'открыто'}*
 """
     return text, reply_markup
 
@@ -350,9 +351,7 @@ async def send_notification(context):
         await context.bot.send_message(chat_id=n["chat_id"], text=text)
         if msg_id := event.get("welcome_message"):
             try:
-                msg_data = pickle.load(
-                    open(f"data/{msg_id}.pkl", "rb")
-                )
+                msg_data = pickle.load(open(f"data/{msg_id}.pkl", "rb"))
             except Exception as e:
                 logger.error(e, exc_info=True)
             else:
@@ -360,6 +359,7 @@ async def send_notification(context):
                     chat_id=n["chat_id"],
                     photo=msg_data["photo"],
                     caption=msg_data["msg"],
+                    parse_mode="markdown",
                 )
         async with db_lock:
             notification.remove(doc_ids=[n.doc_id])
@@ -442,10 +442,10 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if data[0] == "add-event":
         text = (
             "Для добавления события отправьте сообщение в формате:\n"
-            "<b>Название события</b>@<b>дата в формате 2024-09-30</b>@"
-            "<b>время</b>@<b>количество свободных мест, числом</b>\n\n"
+            "*Название события*@*дата в формате 2024-09-30*@"
+            "*время*@*количество свободных мест, числом*\n\n"
             "Пример:\n"
-            "<b>Событие 1</b>@<b>2024-09-30</b>@<b>12:00</b>@<b>10</b>"
+            "*Событие 1*@*2024-09-30*@*12:00*@*10*"
         )
         wait_for_message[query.message.chat_id] = {
             "type": "add-event",
@@ -572,11 +572,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 events.update(event, Query().id == int(data[1]))
                 text = "Вы успешно отменили регистрацию на событие /start"
                 notification.remove(
-                    (
-                        Query().event_id
-                        == event["id"] & Query().chat_id
-                        == query.message.chat_id
-                    )
+                    Query().fragment({"event_id": event["id"], "chat_id": query.message.chat_id})
                 )
             else:
                 text = "Вы небыли записаны на событие /start"
@@ -612,14 +608,20 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if msg_data:
         await query.edit_message_media(
             media=InputMediaPhoto(
-                media=msg_data["photo"].file_id, caption=msg_data["msg"]
+                media=msg_data["photo"].file_id,
+                caption=msg_data["msg"],
+                parse_mode="markdown",
             ),
             reply_markup=reply,
         )
         return
     elif query.message.photo:
         await query.edit_message_media(
-            media=InputMediaPhoto(media=query.message.photo[-1].file_id, caption=text),
+            media=InputMediaPhoto(
+                media=query.message.photo[-1].file_id,
+                caption=text,
+                parse_mode="markdown",
+            ),
             reply_markup=reply,
         )
         return
@@ -676,7 +678,10 @@ async def photo_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
     await context.bot.send_photo(
-        chat_id=update.effective_chat.id, photo=photo, caption=msg
+        chat_id=update.effective_chat.id,
+        photo=photo,
+        caption=msg,
+        parse_mode="markdown",
     )
 
 
