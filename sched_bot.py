@@ -133,7 +133,29 @@ class Channel:
                 else:
                     r.append(user)
                     channels.update({"registered_users": r}, Query().id == self.id)
-                    text = f"Вы успешно зарегистрировались на канал {self.name} - для продолженния напишите /start"
+                    ch = channels_obj[self.id]
+                    if msg_id := ch.welcome_message():
+                        try:
+                            msg_data = pickle.load(open(f"data/{msg_id}.pkl", "rb"))
+                        except Exception as e:
+                            logger.error(e, exc_info=True)
+                        else:
+                            logger.info("Send welcome message %r", msg_data)
+                    text, reply = await ch.all_events(cmd="register", username=user)
+                    if msg_data:
+                        await update.message.reply_photo(
+                            photo=msg_data["photo"],
+                            caption=msg_data["msg"],
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                            reply_markup=reply,
+                        )
+                        return
+                    else:
+                        await update.message.reply_text(text=text, reply_markup=reply, parse_mode=ParseMode.HTML)
+
+
+                    # text = f"Вы успешно зарегистрировались на канал {self.name} - для продолженния напишите /start"
+
         await update.message.reply_text(text=text, parse_mode=ParseMode.HTML)
 
     async def register_as_admin(
@@ -272,6 +294,15 @@ async def start(update: Update, context: CallbackContext):
         await update.message.reply_text(text=text, reply_markup=reply_markup)
 
 
+def escape(text):
+    return (
+        text.replace("_", "\\_")
+        .replace(".", "\\.")
+        .replace(":", "\\:")
+        .replace("-", "\\-")
+    )
+
+
 async def event_show_change(event):
     keyboard = [
         [
@@ -328,12 +359,12 @@ async def event_show_change(event):
         ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    text = f"""Изменение события {event['name']}\n
-    дата:\t*{event["date"]}*
-    время:\t*{event["time"]}*
+    text = f"""Изменение события {escape(event['name'])}\n
+    дата:\t*{escape(event["date"])}*
+    время:\t*{escape(event["time"])}*
     мест:\t*{event["capacity"]}*
     занято:\t*{len(event["registered_users"])}*
-    кто записан:\t{', '.join([f'@{name}' for name in event["registered_users"]])}
+    кто записан:\t{', '.join([f'@{escape(name)}' for name in event["registered_users"]])}
     событие *{'скрыто' if event.get("hidden", False) else 'открыто'}*
 """
     return text, reply_markup
@@ -574,7 +605,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 events.update(event, Query().id == int(data[1]))
                 text = "Вы успешно отменили регистрацию на событие /start"
                 notification.remove(
-                    Query().fragment({"event_id": event["id"], "chat_id": query.message.chat_id})
+                    Query().fragment(
+                        {"event_id": event["id"], "chat_id": query.message.chat_id}
+                    )
                 )
             else:
                 text = "Вы небыли записаны на событие /start"
@@ -612,7 +645,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             media=InputMediaPhoto(
                 media=msg_data["photo"].file_id,
                 caption=msg_data["msg"],
-                parse_mode="markdown",
+                parse_mode=ParseMode.MARKDOWN_V2,
             ),
             reply_markup=reply,
         )
@@ -622,13 +655,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             media=InputMediaPhoto(
                 media=query.message.photo[-1].file_id,
                 caption=text,
-                parse_mode="markdown",
+                parse_mode=ParseMode.MARKDOWN_V2,
             ),
             reply_markup=reply,
         )
         return
     await query.edit_message_text(
-        text=text, reply_markup=reply, parse_mode=ParseMode.HTML
+        text=text, reply_markup=reply, parse_mode=ParseMode.MARKDOWN_V2
     )
 
 
