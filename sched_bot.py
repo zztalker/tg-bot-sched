@@ -141,14 +141,26 @@ class Channel:
                             logger.error(e, exc_info=True)
                         else:
                             logger.info("Send welcome message %r", msg_data)
-                    text, reply = await ch.all_events(cmd="register", username=user)
+
                     if msg_data:
+                        keyboard = [
+                            [
+                                InlineKeyboardButton(
+                                    text="Записаться",
+                                    callback_data=f"events {self.id}",
+                                ),
+                            ]
+                        ]
+                        reply = InlineKeyboardMarkup(keyboard)
+
+                        logger.info("DBG %r", escape(msg_data["msg"]))
                         await update.message.reply_photo(
                             photo=msg_data["photo"],
-                            caption=msg_data["msg"],
+                            caption=escape(msg_data["msg"]),
                             parse_mode=ParseMode.MARKDOWN_V2,
                             reply_markup=reply,
                         )
+
                         return
                     else:
                         await update.message.reply_text(text=text, reply_markup=reply, parse_mode=ParseMode.HTML)
@@ -203,6 +215,17 @@ class Channel:
             ],
             [
                 InlineKeyboardButton(
+                    "Добавить или изменить event-list message",
+                    callback_data=f"add-emessage {self.id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "Удалить event-list message", callback_data=f"del-emessage {self.id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     "Удалить прошедшие события", callback_data=f"delete-old {self.id}"
                 )
             ],
@@ -213,6 +236,9 @@ class Channel:
 
     def welcome_message(self):
         return channels.get(Query().id == self.id).get("welcome_message")
+
+    def event_list_message(self):
+        return channels.get(Query().id == self.id).get("event_list_message")
 
     def __repr__(self):
         return self.__str__()
@@ -232,6 +258,7 @@ async def start(update: Update, context: CallbackContext):
 
     keyboard = []
     was_admin = False
+    only_channel = None
     for channel in channels.all():
         if user in channel.get("registered_users", []):
             keyboard.append(
@@ -241,6 +268,10 @@ async def start(update: Update, context: CallbackContext):
                     )
                 ]
             )
+            if only_channel is None:
+                only_channel = channel["id"]
+            else:
+                only_channel = False
         if user in channel.get("admins", []):
             was_admin = True
             keyboard.append(
@@ -281,7 +312,27 @@ async def start(update: Update, context: CallbackContext):
 
     text = "Выберите канал для {admin} просмотра событий:".format(admin=admin_text)
 
-    if photo := settings.get(Query().name == "base_image"):
+    if only_channel:
+        ch = channels_obj[only_channel]
+        if msg_id := ch.event_list_message():
+            try:
+                msg_data = pickle.load(open(f"data/{msg_id}.pkl", "rb"))
+            except Exception as e:
+                logger.error(e, exc_info=True)
+            else:
+                logger.info("Send welcome message %r", msg_data)
+        text, reply = await ch.all_events(cmd="register", username=user)
+        if msg_data:
+            await update.message.reply_photo(
+                photo=msg_data["photo"],
+                caption=escape(text),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=reply,
+            )
+        else:
+            await update.message.reply_text(text=text, reply_markup=reply_markup)
+
+    elif photo := settings.get(Query().name == "base_image"):
         if photo_id := photo.get("value"):
             photo_data = pickle.load(open(f"data/{photo_id}.pkl", "rb"))
             await update.message.reply_photo(
@@ -295,12 +346,16 @@ async def start(update: Update, context: CallbackContext):
 
 
 def escape(text):
-    return (
-        text.replace("_", "\\_")
-        .replace(".", "\\.")
-        .replace(":", "\\:")
-        .replace("-", "\\-")
-    )
+    if text is None:
+        return
+    else:
+        return (
+            text.replace("_", "\\_")
+            .replace(".", "\\.")
+            .replace(":", "\\:")
+            .replace("-", "\\-")
+            .replace("!", "\\!")
+        )
 
 
 async def event_show_change(event):
@@ -359,12 +414,12 @@ async def event_show_change(event):
         ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    text = f"""Изменение события {escape(event['name'])}\n
-    дата:\t*{escape(event["date"])}*
-    время:\t*{escape(event["time"])}*
+    text = f"""Изменение события {event['name']}\n
+    дата:\t*{event["date"]}*
+    время:\t*{event["time"]}*
     мест:\t*{event["capacity"]}*
     занято:\t*{len(event["registered_users"])}*
-    кто записан:\t{', '.join([f'@{escape(name)}' for name in event["registered_users"]])}
+    кто записан:\t{', '.join([f'@{name}' for name in event["registered_users"]])}
     событие *{'скрыто' if event.get("hidden", False) else 'открыто'}*
 """
     return text, reply_markup
@@ -372,9 +427,12 @@ async def event_show_change(event):
 
 async def send_notification(context):
     logger.info("Send notification %r", context)
-    now = datetime.now().date().isoformat()
+    now = datetime.now()
     logger.info("Now %r", now)
-    for n in notification.search(Query().date == now):
+    # 15:00 UTC
+    if now.hour < 15:
+        return
+    for n in notification.search(Query().date == now.date().isoformat()):
         logger.info("Notification %r", n)
         event = events.get(Query().id == n["event_id"])
         logger.info("Event %r", event)
@@ -486,7 +544,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         }
     elif data[0] == "events":
         ch = channels_obj[int(data[1])]
-        if msg_id := ch.welcome_message():
+        if msg_id := ch.event_list_message():
             try:
                 msg_data = pickle.load(open(f"data/{msg_id}.pkl", "rb"))
             except Exception as e:
@@ -574,17 +632,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 if user not in event["registered_users"]:
                     event["registered_users"].append(user)
                     events.update(event, Query().id == int(data[1]))
-                    text = "Вы успешно записались на событие"
+                    date = datetime.strptime(event["date"], "%Y-%m-%d").strftime("%a %d.%b")
+                    text = f"Вы успешно записались на событие {date} {event["time"]}"
                     notify_date = datetime.fromisoformat(event["date"]) - timedelta(
                         days=1
                     )
                     notification.insert_multiple(
                         [
-                            {
-                                "event_id": event["id"],
-                                "chat_id": query.message.chat_id,
-                                "date": event["date"],
-                            },
                             {
                                 "event_id": event["id"],
                                 "chat_id": query.message.chat_id,
@@ -623,6 +677,23 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             Path(f"data/{channel["welcome_message"]}.pkl").unlink(missing_ok=True)
             channel["welcome_message"] = None
             channels.update(channel, Query().id == int(data["channel_id"]))
+            text = "Сообщение удалено"
+    elif data[0] == "add-emessage":
+        text = "Отправьте фото и текст для welcome message"
+        wait_for_message[query.message.chat_id] = {
+            "type": "add-emessage",
+            "channel_id": data[1],
+        }
+    elif data[0] == "del-emessage":
+        async with db_lock:
+            channel = channels.get(Query().id == int(data["channel_id"]))
+            if channel.get("event_list_message"):
+                Path(f"data/{channel["event_list_message"]}.pkl").unlink(missing_ok=True)
+                channel["event_list_message"] = None
+                channels.update(channel, Query().id == int(data["channel_id"]))
+                text = "Сообщение удалено"
+            else:
+                text = "Сообщение не было установлено"
     elif data[0] == "settings":
         text = "Отправьте сообщение с картинкой для установки базового изображения"
         wait_for_message[query.message.chat_id] = {
@@ -644,7 +715,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.edit_message_media(
             media=InputMediaPhoto(
                 media=msg_data["photo"].file_id,
-                caption=msg_data["msg"],
+                caption=escape(msg_data["msg"]),
                 parse_mode=ParseMode.MARKDOWN_V2,
             ),
             reply_markup=reply,
@@ -654,14 +725,14 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.edit_message_media(
             media=InputMediaPhoto(
                 media=query.message.photo[-1].file_id,
-                caption=text,
+                caption=escape(text),
                 parse_mode=ParseMode.MARKDOWN_V2,
             ),
             reply_markup=reply,
         )
         return
     await query.edit_message_text(
-        text=text, reply_markup=reply, parse_mode=ParseMode.MARKDOWN_V2
+        text=escape(text), reply_markup=reply, parse_mode=ParseMode.MARKDOWN_V2
     )
 
 
@@ -680,6 +751,16 @@ async def photo_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
             async with db_lock:
                 channel = channels.get(Query().id == int(data["channel_id"]))
                 channel["welcome_message"] = uuid
+                channels.update(channel, Query().id == int(data["channel_id"]))
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text="Сообщение сохранено"
+            )
+            return
+        elif data["type"] == "add-emessage":
+            pickle.dump({"photo": photo, "msg": msg}, open(f"data/{uuid}.pkl", "wb"))
+            async with db_lock:
+                channel = channels.get(Query().id == int(data["channel_id"]))
+                channel["event_list_message"] = uuid
                 channels.update(channel, Query().id == int(data["channel_id"]))
             await context.bot.send_message(
                 chat_id=update.effective_chat.id, text="Сообщение сохранено"
