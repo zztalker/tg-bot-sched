@@ -17,3 +17,6 @@ venv.bak/
 #
 db.json
 data/
+
+# MacOS
+.DS_Store

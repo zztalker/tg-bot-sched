@@ -355,6 +355,8 @@ def escape(text):
             .replace(":", "\\:")
             .replace("-", "\\-")
             .replace("!", "\\!")
+            .replace("(", "\\(")
+            .replace(")", "\\)")
         )
 
 
